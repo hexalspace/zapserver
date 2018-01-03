@@ -10,5 +10,8 @@ namespace zapserver
     {
         string getValue(string key);
         void setValue(string key, string value);
+        int? getValueAsNullableInt(string key);
+
+        void remove(string key);
     }
 }

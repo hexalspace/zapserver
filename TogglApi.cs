@@ -13,9 +13,22 @@ namespace zapserver
         {
             req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", Convert.ToBase64String(ASCIIEncoding.ASCII.GetBytes($"{togglApiKey}:api_token")));
             req.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
-        } 
+        }
 
-        public static async Task<int?> getRunningTogglTimeEntryIdAsync(string togglApiKey)
+        private class TimeEntryResponse
+        {
+            public TimeEntry data;
+        }
+
+        public class TimeEntry
+        {
+            public int id;
+            public int? pid;
+            public string description;
+            public IEnumerable<string> tags;
+        }
+
+        public static async Task<TimeEntry> getRunningTogglTimeEntryIdAsync(string togglApiKey)
         {
             var request = new HttpRequestMessage
             {
@@ -25,23 +38,18 @@ namespace zapserver
 
             prepareDefaultsForRequest(request, togglApiKey);
 
-            var result = await m_httpClient.SendAsync(request);
+            var result = await httpClient.SendAsync(request);
             var stringResult = await result.Content.ReadAsStringAsync();
-
-            var jss = new JavaScriptSerializer();
-            var dict = jss.Deserialize<Dictionary<string, dynamic>>(stringResult);
-            int runningTimer;
 
             try
             {
-                runningTimer = dict["data"]["id"];
+                var timeEntryResponse = javaScriptSerializer.Deserialize<TimeEntryResponse>(stringResult);
+                return timeEntryResponse.data;
             }
             catch
             {
                 return null;
             }
-
-            return runningTimer;
         }
 
         public static async Task stopTimeEntry(string togglApiKey, int timeEntryId)
@@ -54,10 +62,40 @@ namespace zapserver
 
             prepareDefaultsForRequest(request, togglApiKey);
 
-            var result = await m_httpClient.SendAsync(request);
+            var result = await httpClient.SendAsync(request);
             return;
         }
 
-        private static readonly HttpClient m_httpClient = new HttpClient();
+        private class TimeEntryRequest
+        {
+            public TimeEntryInternal time_entry;
+        }
+
+        private class TimeEntryInternal
+        {
+            public int? pid;
+            public string description;
+            public IEnumerable<string> tags;
+            public string created_with;
+        }
+
+        public static async Task startTimeEntry(string togglApiKey, string description, IEnumerable<string> tags, int? pid)
+        {
+            var jsonContent = new TimeEntryRequest { time_entry = new TimeEntryInternal { pid = pid, description = description, tags = tags, created_with = "zapserver" } };
+            var request = new HttpRequestMessage
+            {
+                Method = HttpMethod.Post,
+                RequestUri = new Uri($"https://www.toggl.com/api/v8/time_entries/start"),
+                Content = new StringContent(javaScriptSerializer.Serialize(jsonContent), Encoding.UTF8, "application/json")
+            };
+
+            prepareDefaultsForRequest(request, togglApiKey);
+
+            var result = await httpClient.SendAsync(request);
+            return;
+        }
+
+        private static readonly HttpClient httpClient = new HttpClient();
+        private static readonly JavaScriptSerializer javaScriptSerializer = new JavaScriptSerializer();
     }
 }
