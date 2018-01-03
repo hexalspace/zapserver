@@ -7,16 +7,30 @@ using System.Threading.Tasks;
 
 namespace zapserver
 {
-    class SqliteKeyValueStore
+    class SqliteKeyValueStore : IKeyValueStore
     {
         public static readonly string keyValueTabelName = "KEYVALUE";
         public static readonly string keyColumnName = "KEY";
         public static readonly string keyValueName = "VALUE";
+        public static readonly string createKeyValueTable =  $"CREATE TABLE `{keyValueTabelName}` (`{keyColumnName}` TEXT, `{keyValueName}` TEXT, PRIMARY KEY(`{keyColumnName}`))";
 
         public SqliteKeyValueStore(string pathToSqlite)
         {
             m_dbConnection = new SQLiteConnection($"Data Source='{pathToSqlite}';Version=3;");
-            m_dbConnection.Open();
+
+            try
+            {
+                m_dbConnection.Open();
+                return;
+            }
+            catch
+            {
+                SQLiteConnection.CreateFile(pathToSqlite);
+                m_dbConnection = new SQLiteConnection($"Data Source='{pathToSqlite}';Version=3;");
+                m_dbConnection.Open();
+                SQLiteCommand command = new SQLiteCommand(createKeyValueTable, m_dbConnection);
+                command.ExecuteNonQuery();
+            }
         }
 
         public string getValue(string key)
