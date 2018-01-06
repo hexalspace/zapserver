@@ -4,6 +4,7 @@ using System.Data.SQLite;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Web.Script.Serialization;
 
 namespace zapserver
 {
@@ -29,7 +30,7 @@ namespace zapserver
             }
         }
 
-        public string getValue(string key)
+        public T getValue<T>(string key)
         {
             string sql = $"SELECT {valueColumnName} from {keyValueTabelName} where {keyColumnName}='{key}'";
             using (SQLiteCommand command = new SQLiteCommand(sql, m_dbConnection))
@@ -38,36 +39,23 @@ namespace zapserver
                 {
                     if (!reader.Read())
                     {
-                        return null;
+                        return default(T);
                     }
-                    return reader[valueColumnName].ToString();
+                    var jsonBlob = reader[valueColumnName].ToString();
+                    return javaScriptSerializer.Deserialize<T>(jsonBlob);
                 }
             }
         }
 
-        public int? getValueAsNullableInt(string key)
+        public void setValue(string key, object value)
         {
-            int? value = null;
-
-            string parseString = getValue(key);
-            if (parseString == null)
+            if (value == null)
             {
-                return null;
+                remove(key);
+                return;
             }
 
-            int v;
-            if (int.TryParse(parseString, out v))
-            {
-                value = v;
-            }
-
-            return value;
-        }
-
-
-        public void setValue(string key, string value)
-        {
-            string sql = $"INSERT OR REPLACE INTO {keyValueTabelName}({keyColumnName}, {valueColumnName}) VALUES ('{key}', '{value}')";
+            string sql = $"INSERT OR REPLACE INTO {keyValueTabelName}({keyColumnName}, {valueColumnName}) VALUES ('{key}', '{javaScriptSerializer.Serialize(value)}')";
             using (SQLiteCommand command = new SQLiteCommand(sql, m_dbConnection))
             {
                 command.ExecuteNonQuery();
@@ -83,6 +71,7 @@ namespace zapserver
             }
         }
 
-        SQLiteConnection m_dbConnection;
+        private SQLiteConnection m_dbConnection;
+        private readonly JavaScriptSerializer javaScriptSerializer = new JavaScriptSerializer();
     }
 }

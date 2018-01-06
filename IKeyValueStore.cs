@@ -8,10 +8,8 @@ namespace zapserver
 {
     interface IKeyValueStore
     {
-        string getValue(string key);
-        void setValue(string key, string value);
-        int? getValueAsNullableInt(string key);
-
+        T getValue<T>(string key);
+        void setValue(string key, object value);
         void remove(string key);
     }
 }

@@ -2,6 +2,7 @@
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Linq;
+using System.Web.Script.Serialization;
 
 namespace zapserver
 {
@@ -25,6 +26,7 @@ namespace zapserver
         public static readonly Dictionary<string, requestHandlerDelegate> routeHandlerDictionary = new Dictionary<string, requestHandlerDelegate>
         {
             {"toggl/stop/", handleTogglStopRequest },
+            {"toggl/start/", handleTogglStartRequest },
             {"toggl/resume/", handleTogglResumeRequest },
         };
         
@@ -57,26 +59,35 @@ namespace zapserver
                     route = $"{route}/";
                 }
 
-                if (!routeHandlerDictionary.ContainsKey(route))
+                var matchingRoute = routeHandlerDictionary.FirstOrDefault(keyValue => route.StartsWith(keyValue.Key));
+                if (matchingRoute.Equals(default(KeyValuePair<string, requestHandlerDelegate>)))
                 {
                     continue;
                 }
 
-                var handlerFunction = routeHandlerDictionary[route];
-                await handlerFunction(context.Request, context.Response, kvStore);
+                var handlerFunction = matchingRoute.Value;
+
+                try
+                {
+                    await handlerFunction(context.Request, context.Response, kvStore);
+                }
+                catch
+                {
+                    context.Response.StatusCode = 400;
+                    context.Response.Close();
+                }
             }
         }
 
 
         public static async Task handleTogglResumeRequest(HttpListenerRequest req, HttpListenerResponse res, IKeyValueStore kvStore)
         {
-            string toggleApiKey = kvStore.getValue(togglApiKeyKey);
+            string toggleApiKey = kvStore.getValue<string>(togglApiKeyKey);
 
-            int? lastId = kvStore.getValueAsNullableInt(togglLastStoppedIdKey);
-            int? pid = kvStore.getValueAsNullableInt(togglLastStoppedPidKey);
-            string description = kvStore.getValue(togglLastStoppedDescKey);
-            string tagString = kvStore.getValue(togglLastStoppedTagsKey);
-            IEnumerable<string> tags = null;
+            int? lastId = kvStore.getValue<int?>(togglLastStoppedIdKey);
+            int? pid = kvStore.getValue<int?>(togglLastStoppedPidKey);
+            string description = kvStore.getValue<string>(togglLastStoppedDescKey);
+            IEnumerable<string> tags = kvStore.getValue<IEnumerable<string>>(togglLastStoppedTagsKey);
 
             if (!lastId.HasValue)
             {
@@ -85,17 +96,7 @@ namespace zapserver
                 return;
             }
 
-            if (tagString != null)
-            {
-                tags = tagString.Split(',');
-            }
-
             await TogglApi.startTimeEntry(toggleApiKey, description, tags, pid);
-
-            kvStore.remove(togglLastStoppedIdKey);
-            kvStore.remove(togglLastStoppedPidKey);
-            kvStore.remove(togglLastStoppedDescKey);
-            kvStore.remove(togglLastStoppedTagsKey);
 
             res.StatusCode = 200;
             res.Close();
@@ -104,7 +105,7 @@ namespace zapserver
 
         public static async Task handleTogglStopRequest(HttpListenerRequest req, HttpListenerResponse res, IKeyValueStore kvStore)
         {
-            string toggleApiKey = kvStore.getValue(togglApiKeyKey);
+            string toggleApiKey = kvStore.getValue<string>(togglApiKeyKey);
 
             TogglApi.TimeEntry timeEntry = await TogglApi.getRunningTogglTimeEntryIdAsync(toggleApiKey);
 
@@ -117,30 +118,51 @@ namespace zapserver
 
             await TogglApi.stopTimeEntry(toggleApiKey, timeEntry.id);
 
-            kvStore.remove(togglLastStoppedIdKey);
-            kvStore.remove(togglLastStoppedPidKey);
-            kvStore.remove(togglLastStoppedDescKey);
-            kvStore.remove(togglLastStoppedTagsKey);
-
-            kvStore.setValue(togglLastStoppedIdKey, timeEntry.id.ToString());
-
-            if (timeEntry.pid.HasValue)
-            {
-                kvStore.setValue(togglLastStoppedPidKey, timeEntry.pid.Value.ToString());
-            }
-
-            if (timeEntry.description != null)
-            {
-                kvStore.setValue(togglLastStoppedDescKey, timeEntry.description);
-            }
-            
-            if (timeEntry.tags != null)
-            {
-                kvStore.setValue(togglLastStoppedTagsKey, string.Join(",", timeEntry.tags));
-            }
+            kvStore.setValue(togglLastStoppedIdKey, timeEntry.id);
+            kvStore.setValue(togglLastStoppedPidKey, timeEntry.pid);
+            kvStore.setValue(togglLastStoppedDescKey, timeEntry.description);
+            kvStore.setValue(togglLastStoppedTagsKey, timeEntry.tags);
             
             res.StatusCode = 200;
             res.Close();
         }
+
+        private class TimeEntryStart
+        {
+            public string projectName;
+            public string description;
+            public IEnumerable<string> tags;
+        }
+
+        public static async Task handleTogglStartRequest(HttpListenerRequest req, HttpListenerResponse res, IKeyValueStore kvStore)
+        {
+            string toggleApiKey = kvStore.getValue<string>(togglApiKeyKey);
+
+            if (!req.HasEntityBody)
+            {
+                res.StatusCode = 400;
+                res.Close();
+                return;
+            }
+
+            string stringContent;
+
+            using (System.IO.Stream body = req.InputStream)
+            {
+                using (System.IO.StreamReader reader = new System.IO.StreamReader(body, req.ContentEncoding))
+                {
+                    stringContent = reader.ReadToEnd();
+                }
+            }
+
+            var timeEntryStart = javaScriptSerializer.Deserialize<TimeEntryStart>(stringContent);
+
+            await TogglApi.startTimeEntry(toggleApiKey, timeEntryStart.description, timeEntryStart.tags, await TogglApi.getProjectIdAsync(toggleApiKey, timeEntryStart.projectName));
+
+            res.StatusCode = 200;
+            res.Close();
+        }
+
+        private static readonly JavaScriptSerializer javaScriptSerializer = new JavaScriptSerializer();
     }
 }
