@@ -10,6 +10,8 @@ namespace zapserver
     {
         public static readonly string sqliteFileName = "zapserver.sqlite";
 
+        public static readonly string zapApiKeyKey = "zapserver-apiKeys";
+
         public static readonly string togglApiKeyKey = "toggl-apiKey";
         public static readonly string togglLastStoppedIdKey = "toggl-lastStoppedId";
         public static readonly string togglLastStoppedPidKey = "toggl-lastStoppedPid";
@@ -21,7 +23,9 @@ namespace zapserver
             asyncMain(args).Wait();
         }
 
-        public delegate Task requestHandlerDelegate(HttpListenerRequest req, HttpListenerResponse res, IKeyValueStore kvStore);
+        public delegate Task requestHandlerDelegate(HttpListenerRequest req, HttpListenerResponse res, string content, IKeyValueStore kvStore);
+
+        public static readonly HashSet<System.Guid> zapserverApiKeys = new HashSet<System.Guid>();
 
         public static readonly Dictionary<string, requestHandlerDelegate> routeHandlerDictionary = new Dictionary<string, requestHandlerDelegate>
         {
@@ -30,15 +34,49 @@ namespace zapserver
             {"toggl/resume/", handleTogglResumeRequest },
         };
         
+        public class ApiKey
+        {
+            public string guid;
+        }
 
         public static async Task asyncMain(string[] args)
         {
+            var parser = new Fclp.FluentCommandLineParser();
+
+            string httpPrefix = null;
+            parser.Setup<bool>("httpsOnly")
+             .Callback(https => httpPrefix = https ? "https" : "http")
+             .SetDefault(false);
+
+            int port = default(int);
+            parser.Setup<int>("port")
+             .Callback(p => port = p)
+             .SetDefault(8080);
+
+            parser.Parse(args);
+
             IKeyValueStore kvStore = new SqliteKeyValueStore(sqliteFileName);
             HttpListener httpListener = new HttpListener();
 
+
+            var storedZapApiKeys = kvStore.getValue<IEnumerable<string>>(zapApiKeyKey);
+
+            foreach (var apiKey in storedZapApiKeys)
+            {
+                try
+                {
+                    System.Guid guid = new System.Guid(apiKey);
+                    zapserverApiKeys.Add(guid);
+                }
+                catch
+                {
+                    ;
+                }
+            }        
+
             foreach (var pair in routeHandlerDictionary)
             {
-                httpListener.Prefixes.Add($"http://localhost:8080/{pair.Key}");
+                httpListener.Prefixes.Add($"{httpPrefix}://localhost:{port}/{pair.Key}");
             }
 
             httpListener.Start();
@@ -62,14 +100,54 @@ namespace zapserver
                 var matchingRoute = routeHandlerDictionary.FirstOrDefault(keyValue => route.StartsWith(keyValue.Key));
                 if (matchingRoute.Equals(default(KeyValuePair<string, requestHandlerDelegate>)))
                 {
+                    context.Response.StatusCode = 400;
+                    context.Response.Close();
                     continue;
                 }
 
                 var handlerFunction = matchingRoute.Value;
 
+                string stringContent = null;
+                if (context.Request.HasEntityBody)
+                {
+                    using (System.IO.Stream body = context.Request.InputStream)
+                    {
+                        using (System.IO.StreamReader reader = new System.IO.StreamReader(body, context.Request.ContentEncoding))
+                        {
+                            stringContent = reader.ReadToEnd();
+                        }
+                    }
+                }
+
+                var authHeaderValue = context.Request.Headers.GetValues("Authorization")?.FirstOrDefault();
+                if (authHeaderValue == null)
+                {
+                    context.Response.StatusCode = 401;
+                    context.Response.Close();
+                    continue;
+                }
+
+                System.Guid guid = default(System.Guid);
+
                 try
                 {
-                    await handlerFunction(context.Request, context.Response, kvStore);
+                    guid = new System.Guid(authHeaderValue);
+                }
+                catch
+                {
+                    ;
+                }
+ 
+                if (!zapserverApiKeys.Contains(guid))
+                {
+                    context.Response.StatusCode = 401;
+                    context.Response.Close();
+                    continue;
+                }
+
+                try
+                {
+                    await handlerFunction(context.Request, context.Response, stringContent, kvStore);
                 }
                 catch
                 {
@@ -80,7 +158,7 @@ namespace zapserver
         }
 
 
-        public static async Task handleTogglResumeRequest(HttpListenerRequest req, HttpListenerResponse res, IKeyValueStore kvStore)
+        public static async Task handleTogglResumeRequest(HttpListenerRequest req, HttpListenerResponse res, string content, IKeyValueStore kvStore)
         {
             string toggleApiKey = kvStore.getValue<string>(togglApiKeyKey);
 
@@ -103,7 +181,7 @@ namespace zapserver
         }
 
 
-        public static async Task handleTogglStopRequest(HttpListenerRequest req, HttpListenerResponse res, IKeyValueStore kvStore)
+        public static async Task handleTogglStopRequest(HttpListenerRequest req, HttpListenerResponse res, string content, IKeyValueStore kvStore)
         {
             string toggleApiKey = kvStore.getValue<string>(togglApiKeyKey);
 
@@ -134,28 +212,18 @@ namespace zapserver
             public IEnumerable<string> tags;
         }
 
-        public static async Task handleTogglStartRequest(HttpListenerRequest req, HttpListenerResponse res, IKeyValueStore kvStore)
+        public static async Task handleTogglStartRequest(HttpListenerRequest req, HttpListenerResponse res, string content, IKeyValueStore kvStore)
         {
             string toggleApiKey = kvStore.getValue<string>(togglApiKeyKey);
 
-            if (!req.HasEntityBody)
+            if (content == null)
             {
                 res.StatusCode = 400;
                 res.Close();
                 return;
             }
 
-            string stringContent;
-
-            using (System.IO.Stream body = req.InputStream)
-            {
-                using (System.IO.StreamReader reader = new System.IO.StreamReader(body, req.ContentEncoding))
-                {
-                    stringContent = reader.ReadToEnd();
-                }
-            }
-
-            var timeEntryStart = javaScriptSerializer.Deserialize<TimeEntryStart>(stringContent);
+            var timeEntryStart = javaScriptSerializer.Deserialize<TimeEntryStart>(content);
 
             await TogglApi.startTimeEntry(toggleApiKey, timeEntryStart.description, timeEntryStart.tags, await TogglApi.getProjectIdAsync(toggleApiKey, timeEntryStart.projectName));
 
